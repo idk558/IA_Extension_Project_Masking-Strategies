@@ -1,0 +1,104 @@
+\documentclass[10pt,conference,compsocconf]{IEEEtran}
+
+\usepackage{hyperref}
+\usepackage{graphicx}	% For figure environment
+
+
+\begin{document}
+\title{Extension Plan Title}
+
+\author{
+  Name1 (SCIPER1), Name2 (SCIPER2), Name3 (SCIPER3)\\
+  \textit{COM-304 Extension Plan}
+}
+
+\maketitle
+
+% ---------- Abstract ----------
+\begin{abstract}
+    Short description of the whole project plan. This document should take \textit{maximum 2 pages} excluding references and appendices, so the abstract should also be very short. 
+ 
+\end{abstract}
+
+
+% ---------- Introduction ----------
+\section{Introduction}
+Summarize the extension to be done. Try and address the following points:
+
+\begin{itemize}
+    \item What category, found in section 4 of the project guidelines\footnote{\url{https://github.com/EPFL-VILAB/com-304-FM-project-2026/blob/main/COM_304_Spring_2026_nano4M_Project_Guidelines.pdf}}, is the extension from (e.g. \textit{alternate masking strategies})?
+    \item What is it more specifically (e.g. What strategies will be implemented)?
+    \item What benefits does implementing it get us (e.g. what improvements would the new masking strategies bring)?
+\end{itemize}
+
+
+
+
+\subsection{Subsection 1}
+
+Use subsections, lists, figures and other formatting techniques when appropriate throughout the document to break up your text to make your proposal more readable and understandable.
+
+\subsection{Subsection 2}
+
+While the content of your extension plan will not be the same as other scientific writing, the quality and style of writing should be similar. Refer to the writing\_tips.pdf document in this \LaTeX package and highly regarded and influential Deep Learning papers for examples of good scientific writing style.
+
+\subsection{Subsection 3}
+
+If you are very unfamiliar with \LaTeX, you are often able to download the \TeX source for papers from arXiv. These can be a good reference of how to achieve a particular formatting.
+
+
+% ---------- Related Works ----------
+\section{Related Works}
+
+No problem nor solution thereof ever exists in a vacuum. What are the main related papers to this topic that you will refer to to make your solution? Cite~\cite{example} them here. (If relevant to your topic) What do they say about the expected outcome of your implementation in terms of performance? Is there other related background that is relevant but you don’t use? Still put them in here.
+
+\textbf{This should be multiple papers, not just 1 or 2}. You don't necessarily have to describe all papers in depth, but can summarize trends. Try referring to real related works sections from influential papers to help understand this section better.
+
+
+% ---------- Method ----------
+\section{Method}
+
+Detail in this section how you plan to approach the central problem laid out in the introduction.
+
+What are the necessary steps you need to take to solve this problem, given in full detail in terms of data, models, training runs needed etc. as much as you can. This can change during the project but we want to know you have an idea of how you will do this in advance.
+
+\begin{figure}[tbph]
+  \centering
+  \includegraphics[width=0.8\columnwidth]{example-image-a}
+  \caption{\textbf{A picture tells a thousand words}. Figures can help convey your message much more effectively and efficiently then just writing, so you should use them wherever possible.}
+  \vspace{-3mm}
+  \label{fig:placeholder1}
+\end{figure}
+
+
+% ---------- Validation ----------
+\section{Validation}
+
+How will you validate your solution is correct in terms of metrics, experiments, or anything else related?
+
+Are there any baselines or ablations to compare against relevant to your problem e.g. the \texttt{nano4M} with no modification, or testing individual changes instead off all at once. You won’t have time to compare against other models as baselines so think what you can do with your limited time and compute.
+
+What should be in this section will be category dependent. For example, the \textit{alternate masking strategy} category would primarily need comparisons about the effects of different masking on different modalities, while the \textit{\texttt{nano4M} speed run} category would primarily need clear measurements of model performance under the setting that would be seen in practice such as training and inference.
+
+
+% ---------- Timeline ----------
+\section{Timeline}
+Give us a week by week plan (or more detailed if you want) of how you will realize this solution. This also doesn’t have to be followed exactly, but it should be reasonable enough such that we can trust that you are capable of completing your extensions in the 4 weeks available.
+
+
+Also give us a week by week estimate of compute requirements. Based on this we need to know that you will have enough compute to solve the problem. Do this based on past experience of training models in the notebooks. E.g. how much compute did it take to train \texttt{nano4M} for a certain amount of tokens?
+
+
+
+% ---------- Discussion ----------
+\section{Discussion}
+Use this section to think critically about the problem and the proposed solution. Can you recognize potential risks of your project plan/approach and shortcomings to your solution?
+
+If you have more time and/or compute, what would you do to make a better solution?
+
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{literature}
+
+\end{document}
