@@ -4,7 +4,7 @@ import random
 import sys
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -69,7 +69,7 @@ def to_device(data_dict: Dict[str, Any], device: torch.device):
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, device: torch.device, dtype: torch.dtype, max_batches: int | None = None):
+def evaluate(model, data_loader, device: torch.device, dtype: torch.dtype, max_batches: Optional[int] = None):
     model_state = model.training
     model.eval()
 
