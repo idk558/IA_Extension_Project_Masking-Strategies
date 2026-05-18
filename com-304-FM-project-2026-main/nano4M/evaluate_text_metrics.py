@@ -45,6 +45,12 @@ def parse_args():
         default=None,
         help="Optional limit for quick tests.",
     )
+    parser.add_argument(
+        "--show-samples",
+        type=int,
+        default=10,
+        help="Number of scored examples to print. Use -1 to print all examples.",
+    )
     return parser.parse_args()
 
 
@@ -140,6 +146,8 @@ def build_output(
         per_sample.append(
             {
                 "dataset_index": record.get("dataset_index", idx),
+                "input_text": references[0],
+                "output_text": candidate,
                 "predicted_text": candidate,
                 "reference_text": references,
                 "scores": {
@@ -158,6 +166,24 @@ def build_output(
         },
         "samples": per_sample,
     }
+
+
+def print_sample_scores(samples: List[Dict[str, Any]], show_samples: int):
+    if show_samples == 0:
+        return
+
+    limit = len(samples) if show_samples < 0 else min(show_samples, len(samples))
+    print(f"\nShowing {limit} scored text examples")
+    for idx, sample in enumerate(samples[:limit], start=1):
+        print(f"\nExample {idx} | dataset_index={sample['dataset_index']}")
+        print(f"Input/reference : {sample['input_text']}")
+        print(f"Output/nano4M   : {sample['output_text']}")
+        if sample["scores"]:
+            score_text = ", ".join(
+                f"{metric_name}={score:.4f}"
+                for metric_name, score in sorted(sample["scores"].items())
+            )
+            print(f"Scores          : {score_text}")
 
 
 def main():
@@ -179,6 +205,7 @@ def main():
     print(f"Evaluated {output['num_samples']} text pairs")
     for metric_name, score in output["corpus_scores"].items():
         print(f"{metric_name}: {score:.4f}")
+    print_sample_scores(output["samples"], args.show_samples)
     print(f"Saved scores to {output_path}")
 
 
