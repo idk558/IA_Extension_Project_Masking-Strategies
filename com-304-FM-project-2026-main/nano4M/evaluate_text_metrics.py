@@ -32,11 +32,22 @@ def parse_args():
         help="Field name containing the reference text or list of references.",
     )
     parser.add_argument(
+        "--backend",
+        choices=("auto", "aac", "pycocoevalcap"),
+        default="auto",
+        help=(
+            "Metric backend. 'auto' tries pycocoevalcap first because it avoids "
+            "torch/torchaudio/torchvision conflicts for text-only evaluation."
+        ),
+    )
+    parser.add_argument(
         "--metrics",
         default="default",
         help=(
-            "Metric set passed to aac-metrics. Use default for BLEU, ROUGE-L, "
-            "METEOR, CIDEr-D, SPICE, and SPIDEr. Example: dcase2024."
+            "Metric set. With pycocoevalcap, default uses BLEU, ROUGE-L, CIDEr, "
+            "SPICE, and SPIDEr; METEOR can be requested explicitly but may hang "
+            "with some Java versions. Comma-separated names such as "
+            "bleu,rouge_l,cider,spice are accepted."
         ),
     )
     parser.add_argument(
@@ -113,7 +124,91 @@ def load_text_pairs(
     return kept_records, candidates, mult_references
 
 
-def evaluate_text(candidates: List[str], mult_references: List[List[str]], metrics: str):
+def normalize_metric_names(metrics: str) -> List[str]:
+    if metrics == "default":
+        return ["bleu", "rouge_l", "cider", "spice"]
+    return [metric.strip().lower().replace("-", "_") for metric in metrics.split(",") if metric.strip()]
+
+
+def compute_spider_scores(sentence_scores: Dict[str, Any]):
+    cider_scores = sentence_scores.get("CIDEr")
+    spice_scores = sentence_scores.get("SPICE")
+    if cider_scores is None or spice_scores is None:
+        return None, None
+    cider_values = to_float_list(cider_scores)
+    spice_values = to_float_list(spice_scores)
+    spider_values = [
+        (cider_value + spice_value) / 2.0
+        for cider_value, spice_value in zip(cider_values, spice_values)
+    ]
+    if not spider_values:
+        return None, None
+    return sum(spider_values) / len(spider_values), spider_values
+
+
+def evaluate_text_with_pycocoevalcap(
+    candidates: List[str],
+    mult_references: List[List[str]],
+    metrics: str,
+):
+    metric_names = normalize_metric_names(metrics)
+    gts = {idx: references for idx, references in enumerate(mult_references)}
+    res = {idx: [candidate] for idx, candidate in enumerate(candidates)}
+
+    scorers = []
+    if any(name in metric_names for name in ("bleu", "bleu_1", "bleu_2", "bleu_3", "bleu_4")):
+        from pycocoevalcap.bleu.bleu import Bleu
+
+        scorers.append((Bleu(4), ["BLEU_1", "BLEU_2", "BLEU_3", "BLEU_4"]))
+    if "meteor" in metric_names:
+        from pycocoevalcap.meteor.meteor import Meteor
+
+        scorers.append((Meteor(), ["METEOR"]))
+    if "rouge_l" in metric_names or "rouge" in metric_names:
+        from pycocoevalcap.rouge.rouge import Rouge
+
+        scorers.append((Rouge(), ["ROUGE_L"]))
+    if "cider" in metric_names or "cider_d" in metric_names:
+        from pycocoevalcap.cider.cider import Cider
+
+        scorers.append((Cider(), ["CIDEr"]))
+    if "spice" in metric_names:
+        from pycocoevalcap.spice.spice import Spice
+
+        scorers.append((Spice(), ["SPICE"]))
+
+    if not scorers:
+        raise ValueError(f"No supported pycocoevalcap metrics selected: {metrics}")
+
+    corpus_scores: Dict[str, Any] = {}
+    sentence_scores: Dict[str, Any] = {}
+    for scorer, names in scorers:
+        score, scores = scorer.compute_score(gts, res)
+        if isinstance(score, list):
+            for metric_name, metric_score, metric_scores in zip(names, score, scores):
+                corpus_scores[metric_name] = metric_score
+                sentence_scores[metric_name] = metric_scores
+            continue
+
+        metric_name = names[0]
+        corpus_scores[metric_name] = score
+        if metric_name == "SPICE":
+            sentence_scores[metric_name] = [
+                item["All"]["f"] if isinstance(item, dict) and "All" in item else item
+                for item in scores
+            ]
+        else:
+            sentence_scores[metric_name] = scores
+
+    spider_score, spider_scores = compute_spider_scores(sentence_scores)
+    if spider_score is not None and spider_scores is not None:
+        corpus_scores["SPIDEr"] = spider_score
+        sentence_scores["SPIDEr"] = spider_scores
+
+    return corpus_scores, sentence_scores
+
+
+def evaluate_text_with_aac_metrics(candidates: List[str], mult_references: List[List[str]], metrics: str):
     try:
         from aac_metrics import evaluate
     except ModuleNotFoundError as exc:
@@ -127,6 +222,22 @@ def evaluate_text(candidates: List[str], mult_references: List[List[str]], metri
     if metrics == "default":
         return evaluate(candidates, mult_references)
     return evaluate(candidates, mult_references, metrics=metrics)
+
+
+def evaluate_text(candidates: List[str], mult_references: List[List[str]], metrics: str, backend: str):
+    if backend in ("auto", "pycocoevalcap"):
+        try:
+            return evaluate_text_with_pycocoevalcap(candidates, mult_references, metrics)
+        except ModuleNotFoundError as exc:
+            if backend == "pycocoevalcap":
+                raise ModuleNotFoundError(
+                    "Missing dependency 'pycocoevalcap'. Install it with:\n"
+                    "  python -m pip install pycocoevalcap\n"
+                    "METEOR and SPICE also require Java."
+                ) from exc
+            print(f"[WARN] pycocoevalcap is unavailable ({exc}); trying aac-metrics.")
+
+    return evaluate_text_with_aac_metrics(candidates, mult_references, metrics)
 
 
 def build_output(
@@ -196,7 +307,7 @@ def main():
         reference_key=args.reference_key,
         max_samples=args.max_samples,
     )
-    corpus_scores, sentence_scores = evaluate_text(candidates, mult_references, args.metrics)
+    corpus_scores, sentence_scores = evaluate_text(candidates, mult_references, args.metrics, args.backend)
     output = build_output(kept_records, candidates, mult_references, corpus_scores, sentence_scores)
 
     output_path = Path(args.output_json)
