@@ -50,6 +50,8 @@ def get_args():
                         help="Training dataloader config (default: %(default)s)")
     parser.add_argument("--eval_loader_config", default={}, type=Dict,
                         help="Validation dataloader config (default: %(default)s)")
+    parser.add_argument('--masking_strategy', default=None, type=str,
+                        help='Override the masking strategy from the YAML config, e.g. model_v0, model_v1, model_v2, model_v3, or model_v4')
 
 
     # Training parameters
@@ -131,6 +133,10 @@ def get_args():
 
     # Add the config path as a final args if given
     args.config_path = args_config.config
+
+    if args.masking_strategy is not None:
+        args.train_loader_config["masking_strategy"] = args.masking_strategy
+        args.eval_loader_config["masking_strategy"] = args.masking_strategy
 
     return args
 

@@ -65,8 +65,15 @@ class SimpleMultimodalMasking(object):
             include_unmasked_data_dict: If True, adds the unmasked data dictionary to the output
                 using the key 'unmasked_data_dict'.
             masking_strategy: Strategy used for target positions. Supports:
-                'random', 'span', 'block', 'structured', and 'mixed'. Structured uses
-                span masking for sequence modalities and block masking for image modalities.
+                'random', 'span', 'block', 'structured', 'mixed', and the five model
+                variants used in the masking experiments:
+                'random'/'model_v0': random for text and image.
+                'model_v1': span for text, random for image.
+                'model_v2': random for text, block for image.
+                'model_v3': span for text, block for image.
+                'model_v4': 50/50 random/span for text and 50/50 random/block for image.
+                Structured uses span masking for sequence modalities and block masking
+                for image modalities.
             structured_mask_probability: Probability of using the structured strategy when
                 it applies to a modality. Values below 1.0 mix structured and random masking.
             sequence_modalities: Optional explicit list of sequence-like modalities.
@@ -93,7 +100,7 @@ class SimpleMultimodalMasking(object):
         self.overlap_vocab = overlap_vocab
         self.overlap_posembs = overlap_posembs
         self.include_unmasked_data_dict = include_unmasked_data_dict
-        self.masking_strategy = masking_strategy.lower()
+        self.masking_strategy = self.normalize_masking_strategy(masking_strategy)
         self.structured_mask_probability = structured_mask_probability
         self.sequence_modalities = set(sequence_modalities or [])
         self.image_modalities = set(image_modalities or [])
@@ -111,7 +118,18 @@ class SimpleMultimodalMasking(object):
         # GPT2 vocab size = 50257, sentinel tokens start just after
         self.sentinel_token_start_id = 50257
 
-        valid_strategies = {"random", "span", "block", "structured", "mixed"}
+        valid_strategies = {
+            "random",
+            "span",
+            "block",
+            "structured",
+            "mixed",
+            "model_v0",
+            "model_v1",
+            "model_v2",
+            "model_v3",
+            "model_v4",
+        }
         if self.masking_strategy not in valid_strategies:
             raise ValueError(f"Unknown masking_strategy '{masking_strategy}'. Expected one of {sorted(valid_strategies)}")
         if not 0.0 <= self.structured_mask_probability <= 1.0:
@@ -129,6 +147,34 @@ class SimpleMultimodalMasking(object):
         eps = 1e-9
         self.input_dirichlet = Dirichlet(torch.clamp(self.input_alphas, min=eps))
         self.target_dirichlet = Dirichlet(torch.clamp(self.target_alphas, min=eps))
+
+    @staticmethod
+    def normalize_masking_strategy(masking_strategy: str) -> str:
+        """Normalize experiment strategy aliases to one internal name."""
+        strategy = masking_strategy.lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "v0": "model_v0",
+            "modelv0": "model_v0",
+            "modele_v0": "model_v0",
+            "modelev0": "model_v0",
+            "v1": "model_v1",
+            "modelv1": "model_v1",
+            "modele_v1": "model_v1",
+            "modelev1": "model_v1",
+            "v2": "model_v2",
+            "modelv2": "model_v2",
+            "modele_v2": "model_v2",
+            "modelev2": "model_v2",
+            "v3": "model_v3",
+            "modelv3": "model_v3",
+            "modele_v3": "model_v3",
+            "modelev3": "model_v3",
+            "v4": "model_v4",
+            "modelv4": "model_v4",
+            "modele_v4": "model_v4",
+            "modelev4": "model_v4",
+        }
+        return aliases.get(strategy, strategy)
 
     def is_sequence_modality(self, modality: str) -> bool:
         if modality in self.sequence_modalities:
@@ -282,7 +328,35 @@ class SimpleMultimodalMasking(object):
     def sample_target_positions(self, modality: str, num_tokens: int, num_positions: int) -> torch.Tensor:
         """Sample decoder target positions according to the configured masking strategy."""
         use_structured = random.random() < self.structured_mask_probability
-        if self.masking_strategy == "random" or not use_structured:
+        if self.masking_strategy in {"random", "model_v0"} or not use_structured:
+            return self.sample_random_positions(num_tokens, num_positions)
+
+        if self.masking_strategy == "model_v1":
+            if self.is_sequence_modality(modality):
+                return self.sample_span_positions(num_tokens, num_positions)
+            return self.sample_random_positions(num_tokens, num_positions)
+
+        if self.masking_strategy == "model_v2":
+            if self.is_image_modality(modality):
+                return self.sample_block_positions(num_tokens, num_positions, modality=modality)
+            return self.sample_random_positions(num_tokens, num_positions)
+
+        if self.masking_strategy == "model_v3":
+            if self.is_sequence_modality(modality):
+                return self.sample_span_positions(num_tokens, num_positions)
+            if self.is_image_modality(modality):
+                return self.sample_block_positions(num_tokens, num_positions, modality=modality)
+            return self.sample_random_positions(num_tokens, num_positions)
+
+        if self.masking_strategy == "model_v4":
+            if self.is_sequence_modality(modality):
+                if random.random() < 0.5:
+                    return self.sample_span_positions(num_tokens, num_positions)
+                return self.sample_random_positions(num_tokens, num_positions)
+            if self.is_image_modality(modality):
+                if random.random() < 0.5:
+                    return self.sample_block_positions(num_tokens, num_positions, modality=modality)
+                return self.sample_random_positions(num_tokens, num_positions)
             return self.sample_random_positions(num_tokens, num_positions)
 
         if self.masking_strategy in {"span", "structured", "mixed"} and self.is_sequence_modality(modality):
