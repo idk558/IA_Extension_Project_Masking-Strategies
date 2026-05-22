@@ -2270,7 +2270,7 @@ TOTAL_STEPS = 38147
 
 models = {
     "v1_random — Random masking": v1_random,
-    "v2_span — Span masking": v2_span,
+    "v2_block — Block masking": v2_span,
     "v3_block — Block masking": v3_block,
     "v4_span_block — Span + Block masking": v4_span_block,
     "v5_span_block_random — Span + Block + Random": v5_span_block_random,
