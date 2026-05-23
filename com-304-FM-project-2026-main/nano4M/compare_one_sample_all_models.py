@@ -28,6 +28,7 @@ from score_scene_desc_predictions import (
     rouge_l,
     tokenize,
 )
+from render_scene_desc_to_png import render_scene_desc
 
 
 DEFAULT_TOKENIZER_IDS = {
@@ -270,6 +271,14 @@ def write_report(
                 "",
             ]
         )
+    elif "rendered_scene_desc" in image_paths:
+        lines.extend(
+            [
+                "## Rendered Scene From Reference Description",
+                f"![Rendered Scene]({image_paths['rendered_scene_desc'].name})",
+                "",
+            ]
+        )
     elif "tok_rgb@256" in image_paths:
         lines.extend(
             [
@@ -396,6 +405,10 @@ def main():
     raw_rgb_path = copy_raw_rgb_if_available(args.root_dir, args.split, sample_name, output_dir)
     if raw_rgb_path is not None:
         image_paths["raw_rgb"] = raw_rgb_path
+    else:
+        rendered_path = output_dir / "scene_desc_render.png"
+        render_scene_desc(reference_text, rendered_path)
+        image_paths["rendered_scene_desc"] = rendered_path
     if not args.skip_image_reconstruction:
         image_paths = save_modalities_from_tokens(
             sample=sample,
@@ -405,6 +418,8 @@ def main():
         )
         if raw_rgb_path is not None:
             image_paths["raw_rgb"] = raw_rgb_path
+        else:
+            image_paths["rendered_scene_desc"] = rendered_path
 
     model_specs = [
         ("baseline", "Baseline", getattr(args, "baseline_checkpoint")),
