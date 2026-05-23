@@ -202,9 +202,27 @@ def load_model_from_safetensors(
 ) -> torch.nn.Module:
     ckpt, config = load_safetensors(ckpt_path)
     model = instantiate(config)
-    model.load_state_dict(ckpt)
+    ckpt = normalize_legacy_state_dict_keys(ckpt)
+    missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+    if missing_keys:
+        print(f"Missing keys when loading {ckpt_path}: {missing_keys}")
+    if unexpected_keys:
+        print(f"Unexpected keys when loading {ckpt_path}: {unexpected_keys}")
     if device is not None:
         model = model.to(device)
     if to_eval:
         model = model.eval()
     return model
+
+
+def normalize_legacy_state_dict_keys(state_dict):
+    """Normalize checkpoint keys from earlier nano4M exercise versions."""
+    normalized = {}
+    for key, value in state_dict.items():
+        new_key = key
+        if ".cross_attn.q_proj." in new_key:
+            new_key = new_key.replace(".cross_attn.q_proj.", ".cross_attn.q.")
+        if ".cross_attn.kv_proj." in new_key:
+            new_key = new_key.replace(".cross_attn.kv_proj.", ".cross_attn.kv.")
+        normalized[new_key] = value
+    return normalized
