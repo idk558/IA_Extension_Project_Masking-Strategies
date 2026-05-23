@@ -315,6 +315,9 @@ def write_report(
         lines.append(f"### {pred['model_label']}")
         lines.append(pred["predicted_text"])
         lines.append("")
+        if pred.get("rendered_image_path"):
+            lines.append(f"![{pred['model_label']}]({Path(pred['rendered_image_path']).name})")
+            lines.append("")
         lines.append(f"#### {pred['model_label']} Text To Render As Image")
         lines.append("")
         lines.append("```text")
@@ -365,6 +368,10 @@ def copy_raw_rgb_if_available(root_dir: str, split: str, file_name: str, output_
                 shutil.copy2(candidate, output_path)
                 return output_path
     return None
+
+
+def slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 def find_next_index_with_image(dataset, root_dir: str, split: str, start_index: int) -> Optional[int]:
@@ -459,6 +466,8 @@ def main():
             top_k=args.top_k,
             top_p=args.top_p,
         )
+        rendered_prediction_path = output_dir / f"{slugify(model_key)}.png"
+        render_scene_desc(predicted_text, rendered_prediction_path)
         metrics = score_prediction(reference_text, predicted_text)
         predictions.append(
             {
@@ -467,6 +476,7 @@ def main():
                 "checkpoint": checkpoint_path,
                 "predicted_text": predicted_text,
                 "predicted_token_count": predicted_token_count,
+                "rendered_image_path": str(rendered_prediction_path),
                 "metrics": metrics,
             }
         )

@@ -36,6 +36,9 @@ from PIL import Image, ImageDraw, ImageFont
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from eval_only import instantiate_from_config, load_checkpoint
+from nanofm.utils.checkpoint import load_model_from_safetensors
+
 
 MODALITIES = ["tok_rgb@256", "tok_depth@256", "tok_normal@256", "scene_desc"]
 DEFAULT_CONFIG = "cfgs/nano4M/multiclevr_d6-6w512.yaml"
@@ -43,7 +46,7 @@ DEFAULT_CONFIG = "cfgs/nano4M/multiclevr_d6-6w512.yaml"
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser("Evaluate CLEVR caption-to-image fidelity")
-    parser.add_argument("--checkpoint", required=True, help="Path to a nano4M safetensors checkpoint")
+    parser.add_argument("--checkpoint", required=True, help="Path to a nano4M checkpoint (.safetensors or .pth)")
     parser.add_argument("--baseline-checkpoint", default=None, help="Optional baseline checkpoint to compare")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="nano4M YAML config to read dataset settings from")
     parser.add_argument("--root-dir", default=None, help="CLEVR dataset root. Overrides the YAML config when set")
@@ -177,10 +180,9 @@ def evaluate_checkpoint(
         output_dir: Path,
     ) -> Dict[str, Any]:
     from nanofm.eval.clevr_verifier import compute_clip_score, compute_fidelity_score
-    from nanofm.utils.checkpoint import load_model_from_safetensors
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = load_model_from_safetensors(checkpoint, device=device, to_eval=True)
+    model = load_model_any_checkpoint(checkpoint, device=device)
 
     sample_count = min(args.num_samples, len(dataset))
     examples = []
@@ -248,6 +250,26 @@ def evaluate_checkpoint(
         "worst_10": sorted_examples[:10],
         "best_10": list(reversed(sorted_examples[-10:])),
     }
+
+
+def load_model_any_checkpoint(
+        checkpoint_path: str,
+        device: torch.device,
+    ) -> torch.nn.Module:
+    ckpt_path = Path(checkpoint_path)
+    if ckpt_path.suffix == ".safetensors":
+        return load_model_from_safetensors(str(ckpt_path), device=device, to_eval=True)
+    if ckpt_path.suffix == ".pth":
+        state_dict, model_config, _, _ = load_checkpoint(str(ckpt_path))
+        if model_config is None:
+            raise ValueError(
+                f"{checkpoint_path} does not contain model_config, so it cannot be rebuilt automatically."
+            )
+        model = instantiate_from_config(model_config)
+        model.load_state_dict(state_dict)
+        model = model.to(device).eval()
+        return model
+    raise ValueError(f"Unsupported checkpoint format for {checkpoint_path}. Expected .pth or .safetensors")
 
 
 def generate_caption_to_image(
