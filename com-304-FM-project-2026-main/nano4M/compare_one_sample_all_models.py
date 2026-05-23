@@ -1,9 +1,10 @@
 import argparse
 import json
 import random
+import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -66,6 +67,16 @@ def parse_args():
         "--skip-image-reconstruction",
         action="store_true",
         help="Skip RGB/depth/normal reconstruction and only compare text outputs.",
+    )
+    parser.add_argument(
+        "--include-scores",
+        action="store_true",
+        help="Include BLEU-4, ROUGE-L and Exact Match in the markdown report for this single sample.",
+    )
+    parser.add_argument(
+        "--require-image",
+        action="store_true",
+        help="If the requested index has no RGB image file, automatically move to the next sample that has one.",
     )
     parser.add_argument(
         "--output-dir",
@@ -248,9 +259,18 @@ def write_report(
     reference_text: str,
     image_paths: Dict[str, Path],
     predictions: List[Dict],
+    include_scores: bool,
 ):
     lines = [f"# Sample {sample_index} Comparison", ""]
-    if "tok_rgb@256" in image_paths:
+    if "raw_rgb" in image_paths:
+        lines.extend(
+            [
+                "## Input Image",
+                f"![RGB]({image_paths['raw_rgb'].name})",
+                "",
+            ]
+        )
+    elif "tok_rgb@256" in image_paths:
         lines.extend(
             [
                 "## Reconstructed Inputs",
@@ -281,40 +301,66 @@ def write_report(
         lines.append(pred["predicted_text"])
         lines.append("")
 
-    lines.extend(
-        [
-            "## Score Table",
-            "",
-            "| Model | BLEU-4 | CIDEr | ROUGE-L | Exact Match |",
-            "|---|---:|---:|---:|---:|",
-        ]
-    )
-    for pred in predictions:
-        metrics = pred["metrics"]
-        lines.append(
-            "| "
-            + pred["model_label"]
-            + " | "
-            + " | ".join(
-                [
-                    format_score(metrics["bleu_4"]),
-                    format_score(metrics["cider"]),
-                    format_score(metrics["rouge_l"]),
-                    format_score(metrics["exact_match"]),
-                ]
-            )
-            + " |"
+    if include_scores:
+        lines.extend(
+            [
+                "## Score Table",
+                "",
+                "| Model | BLEU-4 | ROUGE-L | Exact Match |",
+                "|---|---:|---:|---:|",
+            ]
         )
+        for pred in predictions:
+            metrics = pred["metrics"]
+            lines.append(
+                "| "
+                + pred["model_label"]
+                + " | "
+                + " | ".join(
+                    [
+                        format_score(metrics["bleu_4"]),
+                        format_score(metrics["rouge_l"]),
+                        format_score(metrics["exact_match"]),
+                    ]
+                )
+                + " |"
+            )
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def copy_raw_rgb_if_available(root_dir: str, split: str, file_name: str, output_dir: Path) -> Optional[Path]:
+    split_dir = Path(root_dir) / split
+    candidate_dirs = [split_dir / "rgb", split_dir / "images"]
+    candidate_exts = [".png", ".jpg", ".jpeg"]
+
+    for directory in candidate_dirs:
+        if not directory.exists():
+            continue
+        for ext in candidate_exts:
+            candidate = directory / f"{file_name}{ext}"
+            if candidate.exists():
+                output_path = output_dir / f"rgb{ext}"
+                shutil.copy2(candidate, output_path)
+                return output_path
+    return None
+
+
+def find_next_index_with_image(dataset, root_dir: str, split: str, start_index: int) -> Optional[int]:
+    for idx in range(start_index, len(dataset.file_names)):
+        file_name = dataset.file_names[idx]
+        split_dir = Path(root_dir) / split
+        for folder in ("rgb", "images"):
+            for ext in (".png", ".jpg", ".jpeg"):
+                candidate = split_dir / folder / f"{file_name}{ext}"
+                if candidate.exists():
+                    return idx
+    return None
 
 
 def main():
     args = parse_args()
     set_seed(args.seed)
-
-    output_dir = Path(args.output_dir) / f"sample_{args.index}"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     baseline_checkpoint = getattr(args, "baseline_checkpoint")
     _, dataset, _ = load_model_and_dataset(
@@ -326,12 +372,30 @@ def main():
     if not (0 <= args.index < len(dataset)):
         raise IndexError(f"Dataset index {args.index} is out of range for split {args.split}.")
 
-    sample = dataset[args.index]
+    selected_index = args.index
+    if args.require_image:
+        next_index = find_next_index_with_image(dataset, args.root_dir, args.split, args.index)
+        if next_index is None:
+            raise FileNotFoundError(
+                f"Could not find any sample with a raw RGB image in split {args.split} starting from index {args.index}."
+            )
+        if next_index != args.index:
+            print(f"Requested index {args.index} has no image. Using index {next_index} instead.")
+        selected_index = next_index
+
+    output_dir = Path(args.output_dir) / f"sample_{selected_index}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sample = dataset[selected_index]
+    sample_name = dataset.file_names[selected_index]
     tokenizer = dataset.text_tokenizer
     reference_tokens = trim_special_tokens(sample["scene_desc"], tokenizer)
     reference_text = decode_text(reference_tokens, tokenizer)
 
     image_paths = {}
+    raw_rgb_path = copy_raw_rgb_if_available(args.root_dir, args.split, sample_name, output_dir)
+    if raw_rgb_path is not None:
+        image_paths["raw_rgb"] = raw_rgb_path
     if not args.skip_image_reconstruction:
         image_paths = save_modalities_from_tokens(
             sample=sample,
@@ -339,6 +403,8 @@ def main():
             image_size=args.decode_image_size,
             timesteps=args.decode_timesteps,
         )
+        if raw_rgb_path is not None:
+            image_paths["raw_rgb"] = raw_rgb_path
 
     model_specs = [
         ("baseline", "Baseline", getattr(args, "baseline_checkpoint")),
@@ -380,6 +446,7 @@ def main():
 
     result = {
         "dataset_index": args.index,
+        "selected_index": selected_index,
         "reference_text": reference_text,
         "reference_token_count": int(reference_tokens.numel()),
         "reconstructed_images": {key: str(path) for key, path in image_paths.items()},
@@ -389,7 +456,14 @@ def main():
     json_path = output_dir / "comparison.json"
     md_path = output_dir / "comparison.md"
     json_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    write_report(md_path, args.index, reference_text, image_paths, predictions)
+    write_report(
+        md_path,
+        selected_index,
+        reference_text,
+        image_paths,
+        predictions,
+        include_scores=args.include_scores,
+    )
 
     print(f"Saved JSON comparison to {json_path}")
     print(f"Saved Markdown report to {md_path}")
