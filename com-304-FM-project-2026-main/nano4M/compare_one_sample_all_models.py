@@ -301,6 +301,12 @@ def write_report(
             "",
             reference_text,
             "",
+            "### Reference Text To Render As Image",
+            "",
+            "```text",
+            reference_text,
+            "```",
+            "",
             "## Predictions",
             "",
         ]
@@ -308,6 +314,12 @@ def write_report(
     for pred in predictions:
         lines.append(f"### {pred['model_label']}")
         lines.append(pred["predicted_text"])
+        lines.append("")
+        lines.append(f"#### {pred['model_label']} Text To Render As Image")
+        lines.append("")
+        lines.append("```text")
+        lines.append(pred["predicted_text"])
+        lines.append("```")
         lines.append("")
 
     if include_scores:
