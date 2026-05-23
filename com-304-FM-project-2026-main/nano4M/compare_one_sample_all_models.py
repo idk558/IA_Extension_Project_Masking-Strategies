@@ -63,6 +63,11 @@ def parse_args():
     parser.add_argument("--decode-image-size", type=int, default=224, help="Image size for 4M detokenization.")
     parser.add_argument("--decode-timesteps", type=int, default=19, help="Detokenizer timesteps for RGB/depth/normal.")
     parser.add_argument(
+        "--skip-image-reconstruction",
+        action="store_true",
+        help="Skip RGB/depth/normal reconstruction and only compare text outputs.",
+    )
+    parser.add_argument(
         "--output-dir",
         default="sample_comparisons",
         help="Directory where images, JSON and markdown report will be written.",
@@ -139,6 +144,13 @@ def load_visual_tokenizers(device: str):
     return tokenizers
 
 
+def get_tokenizer_device(tokenizer_model) -> str:
+    try:
+        return str(next(tokenizer_model.parameters()).device)
+    except StopIteration:
+        return "cpu"
+
+
 def tensor_to_image_array(decoded: torch.Tensor, modality: str) -> np.ndarray:
     if isinstance(decoded, torch.Tensor):
         arr = decoded.detach().cpu()
@@ -191,12 +203,21 @@ def save_modalities_from_tokens(
             raise ValueError(
                 f"Expected a square token grid for {modality}, got {flat_tokens.numel()} tokens."
             )
-        token_tensor = flat_tokens.view(1, side, side).to(next(tokenizers[short_name].parameters()).device)
-        decoded = tokenizers[short_name].decode_tokens(
-            token_tensor,
-            image_size=image_size,
-            timesteps=timesteps,
-        )
+        decode_device = get_tokenizer_device(tokenizers[short_name])
+        token_tensor = flat_tokens.view(1, side, side).to(decode_device)
+        try:
+            decoded = tokenizers[short_name].decode_tokens(
+                token_tensor,
+                image_size=image_size,
+                timesteps=timesteps,
+            )
+        except Exception as exc:
+            print(
+                f"Warning: could not reconstruct {modality} "
+                f"(shape={tuple(token_tensor.shape)}, min={int(flat_tokens.min())}, max={int(flat_tokens.max())}). "
+                f"Skipping this modality. Error: {exc}"
+            )
+            continue
         image_array = tensor_to_image_array(decoded, short_name)
         suffix = short_name.replace("tok_", "")
         output_path = output_dir / f"{suffix}.png"
@@ -310,12 +331,14 @@ def main():
     reference_tokens = trim_special_tokens(sample["scene_desc"], tokenizer)
     reference_text = decode_text(reference_tokens, tokenizer)
 
-    image_paths = save_modalities_from_tokens(
-        sample=sample,
-        output_dir=output_dir,
-        image_size=args.decode_image_size,
-        timesteps=args.decode_timesteps,
-    )
+    image_paths = {}
+    if not args.skip_image_reconstruction:
+        image_paths = save_modalities_from_tokens(
+            sample=sample,
+            output_dir=output_dir,
+            image_size=args.decode_image_size,
+            timesteps=args.decode_timesteps,
+        )
 
     model_specs = [
         ("baseline", "Baseline", getattr(args, "baseline_checkpoint")),
