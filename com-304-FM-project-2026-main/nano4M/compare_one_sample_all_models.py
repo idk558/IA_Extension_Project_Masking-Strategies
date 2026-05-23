@@ -185,7 +185,13 @@ def save_modalities_from_tokens(
         short_name = modality.split("@")[0]
         if modality not in sample:
             continue
-        token_tensor = sample[modality].view(1, -1).to(next(tokenizers[short_name].parameters()).device)
+        flat_tokens = sample[modality].flatten().long()
+        side = int(round(flat_tokens.numel() ** 0.5))
+        if side * side != flat_tokens.numel():
+            raise ValueError(
+                f"Expected a square token grid for {modality}, got {flat_tokens.numel()} tokens."
+            )
+        token_tensor = flat_tokens.view(1, side, side).to(next(tokenizers[short_name].parameters()).device)
         decoded = tokenizers[short_name].decode_tokens(
             token_tensor,
             image_size=image_size,
