@@ -59,6 +59,10 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--download-image-tokenizer", action="store_true", help="Download Cosmos tokenizer if missing")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--detector-device", default=None, help="Device for Grounding DINO. Defaults to --device")
+    parser.add_argument("--clip-device", default=None, help="Device for CLIP scoring. Defaults to --device")
+    parser.add_argument("--clip-model-id", default="openai/clip-vit-base-patch32", help="HuggingFace CLIP model ID")
+    parser.add_argument("--clip-max-length", type=int, default=77, help="Maximum CLIP text token length")
+    parser.add_argument("--no-clip-score", action="store_true", help="Disable CLIP text-image scoring")
     parser.add_argument("--box-threshold", type=float, default=0.35)
     parser.add_argument("--text-threshold", type=float, default=0.25)
     parser.add_argument("--num-steps", type=int, default=64, help="ROAR decoding steps per generated modality")
@@ -75,7 +79,7 @@ def get_args() -> argparse.Namespace:
 
 def main(args: argparse.Namespace) -> None:
     from nanofm.data.multimodal.simple_multimodal_dataset import SimpleMultimodalDataset
-    from nanofm.eval.clevr_verifier import GroundingDINOVerifier
+    from nanofm.eval.clevr_verifier import CLIPScoreComputer, GroundingDINOVerifier
 
     device = torch.device(args.device)
     output_dir = Path(args.output_dir)
@@ -97,6 +101,13 @@ def main(args: argparse.Namespace) -> None:
         box_threshold=args.box_threshold,
         text_threshold=args.text_threshold,
     )
+    clip_scorer = None
+    if not args.no_clip_score:
+        clip_scorer = CLIPScoreComputer(
+            model_id=args.clip_model_id,
+            device=args.clip_device or device,
+            max_text_length=args.clip_max_length,
+        )
 
     jobs = [("candidate", args.checkpoint)]
     if args.baseline_checkpoint is not None:
@@ -110,6 +121,7 @@ def main(args: argparse.Namespace) -> None:
             dataset=dataset,
             image_tokenizer=image_tokenizer,
             verifier=verifier,
+            clip_scorer=clip_scorer,
             args=args,
             device=device,
             output_dir=output_dir / label,
@@ -159,11 +171,12 @@ def evaluate_checkpoint(
         dataset: Any,
         image_tokenizer: Any,
         verifier: Any,
+        clip_scorer: Any,
         args: argparse.Namespace,
         device: torch.device,
         output_dir: Path,
     ) -> Dict[str, Any]:
-    from nanofm.eval.clevr_verifier import compute_fidelity_score
+    from nanofm.eval.clevr_verifier import compute_clip_score, compute_fidelity_score
     from nanofm.utils.checkpoint import load_model_from_safetensors
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -172,6 +185,7 @@ def evaluate_checkpoint(
     sample_count = min(args.num_samples, len(dataset))
     examples = []
     scores = []
+    clip_scores = []
     category_values: Dict[str, List[float]] = {}
     target_mods = [mod.strip() for mod in args.generation_targets.split(",") if mod.strip()]
 
@@ -192,6 +206,10 @@ def evaluate_checkpoint(
         image.save(image_path)
 
         score = compute_fidelity_score(caption, image, verifier=verifier)
+        clip_score = None
+        if clip_scorer is not None:
+            clip_score = compute_clip_score(caption, image, scorer=clip_scorer)
+            clip_scores.append(clip_score["clip_score"])
         annotated_image_path = output_dir / f"{idx:06d}_detections.png"
         save_detection_overlay(image, score["detected"], annotated_image_path)
         scores.append(score["score"])
@@ -200,10 +218,13 @@ def evaluate_checkpoint(
 
         examples.append({
             "idx": idx,
-            "caption": caption,
+            "caption": score["caption_clean"],
+            "raw_caption": caption,
             "image_path": str(image_path),
             "annotated_image_path": str(annotated_image_path),
             "score": score["score"],
+            "clip_score": clip_score["clip_score"] if clip_score is not None else None,
+            "clip_cosine": clip_score["clip_cosine"] if clip_score is not None else None,
             "category_score": score["category_score"],
             "hallucination_penalty": score["hallucination_penalty"],
             "per_category_breakdown": score["per_category_breakdown"],
@@ -211,7 +232,8 @@ def evaluate_checkpoint(
             "detected": score["detected"],
         })
 
-        print(f"{label} [{idx + 1}/{sample_count}] score={score['score']:.3f}")
+        clip_text = "" if clip_score is None else f" clip={clip_score['clip_score']:.3f}"
+        print(f"{label} [{idx + 1}/{sample_count}] score={score['score']:.3f}{clip_text}")
 
     sorted_examples = sorted(examples, key=lambda item: item["score"])
     return {
@@ -219,6 +241,8 @@ def evaluate_checkpoint(
         "checkpoint": checkpoint,
         "mean_score": mean(scores),
         "std_score": std(scores),
+        "mean_clip_score": mean(clip_scores),
+        "std_clip_score": std(clip_scores),
         "per_category_breakdown": summarize_categories(category_values),
         "examples": examples,
         "worst_10": sorted_examples[:10],
@@ -530,7 +554,7 @@ def write_visual_report(report: Dict[str, Any], report_path: Path) -> None:
     <h2>Summary</h2>
     <table>
       <thead>
-        <tr><th>Label</th><th>Checkpoint</th><th>Mean</th><th>Std</th><th>Worst</th><th>Best</th></tr>
+        <tr><th>Label</th><th>Checkpoint</th><th>CLEVR mean</th><th>CLEVR std</th><th>CLIP mean</th><th>CLIP std</th><th>Worst</th><th>Best</th></tr>
       </thead>
       <tbody>{rows}</tbody>
     </table>
@@ -548,7 +572,7 @@ def checkpoint_section(report: Dict[str, Any], report_path: Path) -> str:
     examples = sorted(report.get("examples", []), key=lambda item: item["idx"])
     cards = "\n".join(example_card(example, report_path) for example in examples)
     return f"""
-    <h2>{escape(report.get("label"))}: {format_float(report.get("mean_score"))} mean score</h2>
+    <h2>{escape(report.get("label"))}: {format_float(report.get("mean_score"))} CLEVR | {format_float(report.get("mean_clip_score"))} CLIP</h2>
     <div class="small">{escape(report.get("checkpoint"))}</div>
     <div class="grid">{cards}</div>
 """
@@ -593,7 +617,10 @@ def example_card(example: Dict[str, Any], report_path: Path) -> str:
       <section class="card">
         <div class="card-head">
           <h3>Example {escape(example.get("idx"))}</h3>
-          <div class="score {score_class}">{score:.3f}</div>
+          <div>
+            <div class="score {score_class}">{score:.3f}</div>
+            <div class="small">CLIP {format_float(example.get("clip_score"))}</div>
+          </div>
         </div>
         <div class="images">
           <figure>
@@ -622,6 +649,9 @@ def example_card(example: Dict[str, Any], report_path: Path) -> str:
             <div>
               <h3>Score details</h3>
               <ul>
+                <li>CLEVR score: {format_float(example.get("score"))}</li>
+                <li>CLIP score: {format_float(example.get("clip_score"))}</li>
+                <li>CLIP cosine: {format_float(example.get("clip_cosine"))}</li>
                 <li>category score: {format_float(example.get("category_score"))}</li>
                 <li>hallucination penalty: {format_float(example.get("hallucination_penalty"))}</li>
                 {breakdown_rows}
@@ -641,6 +671,8 @@ def comparison_row(row: Dict[str, Any]) -> str:
         f"<td>{escape(row.get('checkpoint'))}</td>"
         f"<td>{format_float(row.get('mean_score'))}</td>"
         f"<td>{format_float(row.get('std_score'))}</td>"
+        f"<td>{format_float(row.get('mean_clip_score'))}</td>"
+        f"<td>{format_float(row.get('std_clip_score'))}</td>"
         f"<td>{format_float(row.get('worst_score'))}</td>"
         f"<td>{format_float(row.get('best_score'))}</td>"
         "</tr>"
@@ -688,6 +720,8 @@ def comparison_table(reports: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "checkpoint": report["checkpoint"],
             "mean_score": report["mean_score"],
             "std_score": report["std_score"],
+            "mean_clip_score": report["mean_clip_score"],
+            "std_clip_score": report["std_clip_score"],
             "worst_score": report["worst_10"][0]["score"] if report["worst_10"] else None,
             "best_score": report["best_10"][0]["score"] if report["best_10"] else None,
         })
@@ -697,6 +731,8 @@ def comparison_table(reports: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "checkpoint": "",
             "mean_score": rows[1]["mean_score"] - rows[0]["mean_score"],
             "std_score": None,
+            "mean_clip_score": rows[1]["mean_clip_score"] - rows[0]["mean_clip_score"],
+            "std_clip_score": None,
             "worst_score": None,
             "best_score": None,
         })

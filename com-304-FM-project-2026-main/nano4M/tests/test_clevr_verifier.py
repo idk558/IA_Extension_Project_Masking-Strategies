@@ -3,7 +3,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from nanofm.eval.clevr_verifier import CLEVRCaptionParser, compute_fidelity_score
+from nanofm.eval.clevr_verifier import (
+    CLEVRCaptionParser,
+    build_clip_text_prompt,
+    compute_clip_score,
+    compute_fidelity_score,
+)
 
 
 class MockVerifier(object):
@@ -12,6 +17,11 @@ class MockVerifier(object):
 
     def detect(self, image, expected_categories):
         return self.detections
+
+
+class MockCLIPScorer(object):
+    def score(self, caption, image):
+        return {"clip_score": 0.75, "clip_cosine": 0.5}
 
 
 class CLEVRVerifierTest(unittest.TestCase):
@@ -74,6 +84,23 @@ class CLEVRVerifierTest(unittest.TestCase):
         self.assertEqual(result["score"], 1.0)
         self.assertEqual(result["category_score"], 1.0)
         self.assertEqual(result["hallucination_penalty"], 1.0)
+
+    def test_clip_score_accepts_reusable_scorer(self):
+        caption = "Object 1 - Shape: cube Color: blue Material: metal."
+        result = compute_clip_score(caption, Image.new("RGB", (8, 8)), scorer=MockCLIPScorer())
+
+        self.assertEqual(result["clip_score"], 0.75)
+        self.assertEqual(result["clip_cosine"], 0.5)
+
+    def test_clip_prompt_is_compact(self):
+        caption = " ".join(
+            f"Object {idx} - Position: x={idx} y={idx} Shape: cube Color: blue Material: metal."
+            for idx in range(1, 10)
+        )
+        prompt = build_clip_text_prompt(caption)
+
+        self.assertIn("blue metal cube", prompt)
+        self.assertLess(len(prompt.split()), len(caption.split()))
 
     def test_score_decreases_monotonically_as_objects_are_missed(self):
         caption = (

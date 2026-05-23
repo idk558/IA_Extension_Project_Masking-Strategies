@@ -16,7 +16,7 @@ CLEVR scene fidelity verifier backed by Grounding DINO.
 
 Example:
     >>> from PIL import Image
-    >>> from nanofm.eval.clevr_verifier import compute_fidelity_score
+    >>> from nanofm.eval.clevr_verifier import compute_clip_score, compute_fidelity_score
     >>> caption = (
     ...     "[SOS]Object 1 - Position: x=77 y=51 Shape: cube Color: blue "
     ...     "Material: metal. [EOS]"
@@ -24,6 +24,7 @@ Example:
     >>> image = Image.open("generated_clevr.png").convert("RGB")
     >>> report = compute_fidelity_score(caption, image)
     >>> print(report["score"], report["per_category_breakdown"])
+    >>> print(compute_clip_score(caption, image)["clip_score"])
 """
 
 from __future__ import annotations
@@ -254,6 +255,78 @@ class GroundingDINOVerifier(object):
         return self.processor.post_process_grounded_object_detection(**kwargs)
 
 
+class CLIPScoreComputer(object):
+    """
+    CLIP text-image similarity scorer.
+
+    The reported clip_score is a normalized cosine similarity in [0, 1]. It is useful as
+    a global alignment signal, complementary to the object-count fidelity score.
+
+    Args:
+        model_id: HuggingFace CLIP model ID.
+        device: Torch device. Defaults to CUDA when available.
+    """
+
+    def __init__(
+            self,
+            model_id: str = "openai/clip-vit-base-patch32",
+            device: Optional[Union[str, torch.device]] = None,
+            max_text_length: int = 77,
+        ):
+        self.model_id = model_id
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.max_text_length = max_text_length
+        self.processor = None
+        self.model = None
+
+    def score(self, caption: str, image: Union[Image.Image, torch.Tensor]) -> Dict[str, float]:
+        """
+        Compute CLIP similarity between a CLEVR caption and an image.
+
+        Args:
+            caption: Ground-truth CLEVR caption.
+            image: Generated image as a PIL image or torch tensor.
+        Returns:
+            Dictionary with normalized clip_score and raw cosine similarity.
+        """
+        self._load_model()
+        text = build_clip_text_prompt(caption)
+        pil_image = to_pil_image(image)
+        inputs = self.processor(
+            text=[text],
+            images=[pil_image],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.max_text_length,
+        ).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            image_features = torch.nn.functional.normalize(outputs.image_embeds, dim=-1)
+            text_features = torch.nn.functional.normalize(outputs.text_embeds, dim=-1)
+            cosine = float((image_features * text_features).sum(dim=-1).detach().cpu().item())
+
+        return {
+            "clip_score": clamp01((cosine + 1.0) / 2.0),
+            "clip_cosine": cosine,
+        }
+
+    def _load_model(self) -> None:
+        if self.processor is not None and self.model is not None:
+            return
+        try:
+            from transformers import CLIPModel, CLIPProcessor
+        except ImportError as exc:
+            raise ImportError(
+                "CLIP scoring requires transformers. Install the nano4M evaluation dependencies first."
+            ) from exc
+
+        self.processor = CLIPProcessor.from_pretrained(self.model_id)
+        self.model = CLIPModel.from_pretrained(self.model_id).to(self.device)
+        self.model.eval()
+
+
 def compute_fidelity_score(
         caption: str,
         image: Union[Image.Image, torch.Tensor],
@@ -278,6 +351,7 @@ def compute_fidelity_score(
 
     return {
         "score": score_info["final_score"],
+        "caption_clean": parser.clean_caption(caption),
         "expected": expected,
         "detected": detected,
         "per_category_breakdown": score_info["per_category_breakdown"],
@@ -288,6 +362,46 @@ def compute_fidelity_score(
         "n_expected": score_info["n_expected"],
         "n_detected": score_info["n_detected"],
     }
+
+
+def compute_clip_score(
+        caption: str,
+        image: Union[Image.Image, torch.Tensor],
+        scorer: Optional[CLIPScoreComputer] = None,
+    ) -> Dict[str, float]:
+    """
+    Compute a CLIP text-image score for one caption/image pair.
+
+    Args:
+        caption: Ground-truth CLEVR caption.
+        image: Generated image as a PIL image or torch tensor.
+        scorer: Optional reusable CLIP scorer instance.
+    Returns:
+        Dictionary with clip_score in [0, 1] and raw clip_cosine.
+    """
+    scorer = scorer or CLIPScoreComputer()
+    return scorer.score(caption, image)
+
+
+def build_clip_text_prompt(caption: str) -> str:
+    """
+    Build a compact CLIP prompt from a structured CLEVR caption.
+
+    Args:
+        caption: Raw CLEVR scene caption.
+    Returns:
+        Short text prompt better suited to CLIP's 77-token text limit.
+    """
+    parser = CLEVRCaptionParser()
+    objects = parser.parse(caption)
+    if not objects:
+        return parser.clean_caption(caption)
+
+    parts = []
+    for obj in objects:
+        attributes = [obj.get("color"), obj.get("material"), obj.get("shape")]
+        parts.append(" ".join(str(value) for value in attributes if value))
+    return "CLEVR scene with " + ", ".join(parts) + "."
 
 
 def score_detections(expected: Sequence[ParsedObject], detected: Sequence[Detection]) -> Dict[str, Any]:
