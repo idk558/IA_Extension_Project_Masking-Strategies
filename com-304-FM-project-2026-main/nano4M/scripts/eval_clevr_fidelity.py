@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import os
@@ -30,7 +31,7 @@ os.environ.setdefault("MPLCONFIGDIR", str(LOCAL_CACHE_DIR / "matplotlib"))
 import torch
 import torchvision.transforms.functional as TF
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -50,6 +51,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--num-samples", type=int, default=100, help="Number of samples to evaluate")
     parser.add_argument("--output-dir", default="outputs/clevr_fidelity", help="Directory for images and JSON report")
     parser.add_argument("--report-name", default="report.json", help="JSON report filename")
+    parser.add_argument("--visual-report-name", default="visual_report.html", help="HTML report for visual inspection")
+    parser.add_argument("--no-visual-report", action="store_true", help="Disable HTML visual report generation")
     parser.add_argument("--text-tokenizer-path", default="gpt2", help="Tokenizer used for scene descriptions")
     parser.add_argument("--text-max-length", type=int, default=256, help="Maximum scene description length")
     parser.add_argument("--image-tokenizer-dir", default="/tmp/nvidia/Cosmos-0.1-Tokenizer-DI16x16")
@@ -122,6 +125,10 @@ def main(args: argparse.Namespace) -> None:
     report_path = output_dir / args.report_name
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
+    if not args.no_visual_report:
+        visual_report_path = output_dir / args.visual_report_name
+        write_visual_report(report, visual_report_path)
+        print(f"Wrote visual report to {visual_report_path}")
     print(json.dumps(report["comparison_table"], indent=2))
     print(f"Wrote report to {report_path}")
 
@@ -185,6 +192,8 @@ def evaluate_checkpoint(
         image.save(image_path)
 
         score = compute_fidelity_score(caption, image, verifier=verifier)
+        annotated_image_path = output_dir / f"{idx:06d}_detections.png"
+        save_detection_overlay(image, score["detected"], annotated_image_path)
         scores.append(score["score"])
         for category, values in score["per_category_breakdown"].items():
             category_values.setdefault(category, []).append(values["match"])
@@ -193,6 +202,7 @@ def evaluate_checkpoint(
             "idx": idx,
             "caption": caption,
             "image_path": str(image_path),
+            "annotated_image_path": str(annotated_image_path),
             "score": score["score"],
             "category_score": score["category_score"],
             "hallucination_penalty": score["hallucination_penalty"],
@@ -210,6 +220,7 @@ def evaluate_checkpoint(
         "mean_score": mean(scores),
         "std_score": std(scores),
         "per_category_breakdown": summarize_categories(category_values),
+        "examples": examples,
         "worst_10": sorted_examples[:10],
         "best_10": list(reversed(sorted_examples[-10:])),
     }
@@ -267,6 +278,71 @@ def token_ids_to_image(token_ids: torch.Tensor, image_tokenizer: Any, device: to
     return TF.to_pil_image(reconst)
 
 
+def save_detection_overlay(image: Image.Image, detections: Sequence[Dict[str, Any]], output_path: Path) -> None:
+    """
+    Save a copy of the generated image with detector boxes drawn on top.
+
+    Args:
+        image: Generated RGB image.
+        detections: Grounding DINO detections from the fidelity scorer.
+        output_path: Destination path for the annotated image.
+    """
+    canvas = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+
+    for detection in detections:
+        bbox = detection.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        x0, y0, x1, y1 = [float(value) for value in bbox]
+        label = detection_label(detection)
+        color = category_color(detection.get("shape"), detection.get("color"))
+        draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
+
+        text_bbox = draw.textbbox((x0, y0), label, font=font)
+        pad = 2
+        background = [
+            text_bbox[0] - pad,
+            text_bbox[1] - pad,
+            text_bbox[2] + pad,
+            text_bbox[3] + pad,
+        ]
+        draw.rectangle(background, fill=color)
+        draw.text((x0, y0), label, fill=(255, 255, 255), font=font)
+
+    canvas.save(output_path)
+
+
+def detection_label(detection: Dict[str, Any]) -> str:
+    """Return a short label for one visualized detection."""
+    label = str(detection.get("label") or "").strip()
+    if not label:
+        shape = detection.get("shape")
+        color = detection.get("color")
+        label = " ".join(str(value) for value in (color, shape) if value)
+    confidence = detection.get("confidence")
+    if confidence is None:
+        return label
+    return f"{label} {float(confidence):.2f}"
+
+
+def category_color(shape: Any, color: Any) -> tuple:
+    """Return a stable RGB color for a detected category."""
+    palette = [
+        (32, 120, 255),
+        (0, 170, 120),
+        (230, 90, 70),
+        (150, 95, 220),
+        (230, 170, 40),
+        (70, 170, 220),
+        (90, 150, 60),
+        (180, 90, 120),
+    ]
+    key = f"{shape}-{color}"
+    return palette[sum(ord(char) for char in key) % len(palette)]
+
+
 def load_image_tokenizer(args: argparse.Namespace, device: torch.device) -> Any:
     tokenizer_dir = Path(args.image_tokenizer_dir)
     encoder = tokenizer_dir / "encoder.jit"
@@ -293,6 +369,304 @@ def load_image_tokenizer(args: argparse.Namespace, device: torch.device) -> Any:
         device=str(device),
         dtype=tokenizer_dtype,
     )
+
+
+def write_visual_report(report: Dict[str, Any], report_path: Path) -> None:
+    """
+    Write an HTML page for manual inspection of captions, images, and scores.
+
+    Args:
+        report: JSON-serializable evaluation report.
+        report_path: Destination HTML file.
+    """
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = "\n".join(comparison_row(row) for row in report["comparison_table"])
+    sections = "\n".join(checkpoint_section(item, report_path) for item in report["reports"])
+    document = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLEVR Fidelity Visual Report</title>
+  <style>
+    body {{
+      margin: 0;
+      background: #f6f7f9;
+      color: #20242a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    header {{
+      background: #111827;
+      color: #ffffff;
+      padding: 24px 32px;
+    }}
+    main {{
+      padding: 24px 32px 48px;
+    }}
+    h1, h2, h3 {{
+      margin: 0;
+      letter-spacing: 0;
+    }}
+    h1 {{
+      font-size: 28px;
+      margin-bottom: 8px;
+    }}
+    h2 {{
+      font-size: 22px;
+      margin: 28px 0 14px;
+    }}
+    h3 {{
+      font-size: 16px;
+      margin-bottom: 8px;
+    }}
+    .meta {{
+      color: #cbd5e1;
+      font-size: 14px;
+    }}
+    table {{
+      border-collapse: collapse;
+      width: 100%;
+      background: #ffffff;
+      border: 1px solid #d9dee7;
+    }}
+    th, td {{
+      border-bottom: 1px solid #e6e9ef;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }}
+    th {{
+      background: #edf0f5;
+      font-weight: 700;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 18px;
+    }}
+    .card {{
+      background: #ffffff;
+      border: 1px solid #d9dee7;
+      border-radius: 8px;
+      overflow: hidden;
+    }}
+    .card-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      padding: 12px 14px;
+      background: #edf0f5;
+      border-bottom: 1px solid #d9dee7;
+    }}
+    .score {{
+      font-size: 24px;
+      font-weight: 800;
+    }}
+    .good {{ color: #0f8b57; }}
+    .mid {{ color: #b7791f; }}
+    .bad {{ color: #c53030; }}
+    .images {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px 14px;
+    }}
+    figure {{
+      margin: 0;
+    }}
+    img {{
+      width: 100%;
+      height: auto;
+      image-rendering: auto;
+      border: 1px solid #e1e5ec;
+      background: #ffffff;
+    }}
+    figcaption {{
+      margin-top: 4px;
+      color: #5f6b7a;
+      font-size: 12px;
+    }}
+    .content {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 0 14px 14px;
+    }}
+    .caption {{
+      background: #f8fafc;
+      border: 1px solid #e1e5ec;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }}
+    .details {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 18px;
+      font-size: 13px;
+      line-height: 1.5;
+    }}
+    .small {{
+      color: #5f6b7a;
+      font-size: 12px;
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CLEVR Fidelity Visual Report</h1>
+    <div class="meta">Split: {escape(report.get("split"))} | samples: {escape(report.get("num_samples"))} | root: {escape(report.get("root_dir"))}</div>
+  </header>
+  <main>
+    <h2>Summary</h2>
+    <table>
+      <thead>
+        <tr><th>Label</th><th>Checkpoint</th><th>Mean</th><th>Std</th><th>Worst</th><th>Best</th></tr>
+      </thead>
+      <tbody>{rows}</tbody>
+    </table>
+    {sections}
+  </main>
+</body>
+</html>
+"""
+    with open(report_path, "w") as f:
+        f.write(document)
+
+
+def checkpoint_section(report: Dict[str, Any], report_path: Path) -> str:
+    """Build the HTML block for one evaluated checkpoint."""
+    examples = sorted(report.get("examples", []), key=lambda item: item["idx"])
+    cards = "\n".join(example_card(example, report_path) for example in examples)
+    return f"""
+    <h2>{escape(report.get("label"))}: {format_float(report.get("mean_score"))} mean score</h2>
+    <div class="small">{escape(report.get("checkpoint"))}</div>
+    <div class="grid">{cards}</div>
+"""
+
+
+def example_card(example: Dict[str, Any], report_path: Path) -> str:
+    """Build one visual example card."""
+    score = float(example.get("score", 0.0))
+    score_class = "good" if score >= 0.75 else "mid" if score >= 0.35 else "bad"
+    raw_path = path_for_html(example.get("image_path"), report_path)
+    annotated_path = path_for_html(example.get("annotated_image_path"), report_path)
+    breakdown_rows = "\n".join(
+        "<li>{}: expected {}, detected {}, match {}</li>".format(
+            escape(category),
+            escape(values.get("expected")),
+            escape(values.get("detected")),
+            format_float(values.get("match")),
+        )
+        for category, values in sorted(example.get("per_category_breakdown", {}).items())
+    )
+    expected_rows = "\n".join(
+        "<li>{} {} | material: {} | position: {}</li>".format(
+            escape(obj.get("color")),
+            escape(obj.get("shape")),
+            escape(obj.get("material")),
+            escape(obj.get("position")),
+        )
+        for obj in example.get("expected", [])
+    )
+    detected_rows = "\n".join(
+        "<li>{} | conf {} | box {}</li>".format(
+            escape(detection.get("label")),
+            format_float(detection.get("confidence")),
+            escape(detection.get("bbox")),
+        )
+        for detection in example.get("detected", [])
+    )
+    if not detected_rows:
+        detected_rows = "<li>No detection</li>"
+
+    return f"""
+      <section class="card">
+        <div class="card-head">
+          <h3>Example {escape(example.get("idx"))}</h3>
+          <div class="score {score_class}">{score:.3f}</div>
+        </div>
+        <div class="images">
+          <figure>
+            <img src="{escape(raw_path)}" alt="Generated image for example {escape(example.get("idx"))}">
+            <figcaption>Generated image</figcaption>
+          </figure>
+          <figure>
+            <img src="{escape(annotated_path)}" alt="Detected boxes for example {escape(example.get("idx"))}">
+            <figcaption>Detector boxes</figcaption>
+          </figure>
+        </div>
+        <div class="content">
+          <div>
+            <h3>Requested text</h3>
+            <div class="caption">{escape(example.get("caption"))}</div>
+          </div>
+          <div class="details">
+            <div>
+              <h3>Expected objects</h3>
+              <ul>{expected_rows}</ul>
+            </div>
+            <div>
+              <h3>Detected objects</h3>
+              <ul>{detected_rows}</ul>
+            </div>
+            <div>
+              <h3>Score details</h3>
+              <ul>
+                <li>category score: {format_float(example.get("category_score"))}</li>
+                <li>hallucination penalty: {format_float(example.get("hallucination_penalty"))}</li>
+                {breakdown_rows}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+"""
+
+
+def comparison_row(row: Dict[str, Any]) -> str:
+    """Build one comparison table row."""
+    return (
+        "<tr>"
+        f"<td>{escape(row.get('label'))}</td>"
+        f"<td>{escape(row.get('checkpoint'))}</td>"
+        f"<td>{format_float(row.get('mean_score'))}</td>"
+        f"<td>{format_float(row.get('std_score'))}</td>"
+        f"<td>{format_float(row.get('worst_score'))}</td>"
+        f"<td>{format_float(row.get('best_score'))}</td>"
+        "</tr>"
+    )
+
+
+def path_for_html(path: Any, report_path: Path) -> str:
+    """Return an image path relative to the HTML report location."""
+    if path is None:
+        return ""
+    image_path = Path(str(path))
+    if not image_path.is_absolute():
+        image_path = (Path.cwd() / image_path).resolve()
+    return os.path.relpath(image_path, start=report_path.parent.resolve())
+
+
+def format_float(value: Any) -> str:
+    """Format a float for display in JSON and HTML reports."""
+    if value is None:
+        return "-"
+    return f"{float(value):.3f}"
+
+
+def escape(value: Any) -> str:
+    """HTML-escape a value."""
+    return html.escape(str(value if value is not None else ""))
 
 
 def summarize_categories(category_values: Dict[str, List[float]]) -> Dict[str, Dict[str, float]]:
