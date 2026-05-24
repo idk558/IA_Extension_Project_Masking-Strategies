@@ -215,6 +215,47 @@ def load_model_from_safetensors(
     return model
 
 
+def load_model_from_checkpoint(
+    ckpt_path: str,
+    device: Optional[Union[str, torch.device]] = None,
+    to_eval: bool = True,
+) -> torch.nn.Module:
+    """Load a nano4M model from a .pth or .safetensors checkpoint."""
+    ckpt_path = str(ckpt_path)
+    if ckpt_path.endswith(".safetensors"):
+        return load_model_from_safetensors(ckpt_path, device=device, to_eval=to_eval)
+    if not ckpt_path.endswith(".pth"):
+        raise ValueError(f"Unsupported checkpoint format: {ckpt_path}")
+
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("model")
+    if state_dict is None:
+        raise ValueError(f"No model state_dict found in checkpoint: {ckpt_path}")
+
+    args = checkpoint.get("args")
+    model_config = getattr(args, "model_config", None) if args is not None else None
+    if model_config is None:
+        model_config = checkpoint.get("model_config")
+    if model_config is None:
+        raise ValueError(
+            f"No model_config found in checkpoint: {ckpt_path}. "
+            "Use a training .pth checkpoint that stores args.model_config."
+        )
+
+    model = instantiate(model_config)
+    state_dict = normalize_legacy_state_dict_keys(state_dict)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys:
+        print(f"Missing keys when loading {ckpt_path}: {missing_keys}")
+    if unexpected_keys:
+        print(f"Unexpected keys when loading {ckpt_path}: {unexpected_keys}")
+    if device is not None:
+        model = model.to(device)
+    if to_eval:
+        model = model.eval()
+    return model
+
+
 def normalize_legacy_state_dict_keys(state_dict):
     """Normalize checkpoint keys from earlier nano4M exercise versions."""
     normalized = {}
