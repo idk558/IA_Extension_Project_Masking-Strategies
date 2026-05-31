@@ -32,6 +32,8 @@ Main scripts:
 
 - [generate_scene_desc_predictions.py](/Users/aymanbelbachir/IA_Extension_Project_Masking-Strategies/com-304-FM-project-2026-main/nano4M/generate_scene_desc_predictions.py:1)
 - [score_scene_desc_predictions.py](/Users/aymanbelbachir/IA_Extension_Project_Masking-Strategies/com-304-FM-project-2026-main/nano4M/score_scene_desc_predictions.py:1)
+- [compare_one_sample_all_models.py](/Users/aymanbelbachir/IA_Extension_Project_Masking-Strategies/com-304-FM-project-2026-main/nano4M/compare_one_sample_all_models.py:1)
+- [render_scene_desc_to_png.py](/Users/aymanbelbachir/IA_Extension_Project_Masking-Strategies/com-304-FM-project-2026-main/nano4M/render_scene_desc_to_png.py:1)
 
 Typical checkpoint path on Kuma:
 
@@ -223,6 +225,127 @@ If one training has:
 - higher `Exact Match`
 
 then it is usually the stronger training for `scene_desc` generation.
+
+## Optional Qualitative Step: Compare One Sample Across All Models
+
+For presentation, debugging, or qualitative analysis, you can also compare:
+
+- the reference `scene_desc`
+- the prediction from `Baseline`
+- the prediction from `V1`
+- the prediction from `V2`
+- the prediction from `V3`
+- the prediction from `V4`
+
+on the **same validation sample**.
+
+This is useful for visually checking:
+
+- whether the models preserve object shape, color, and material
+- whether errors are mainly coordinate shifts
+- how similar the generated descriptions are across masking strategies
+
+### What This Script Produces
+
+The script:
+
+- loads one sample from the dataset
+- extracts the reference `scene_desc`
+- generates one `scene_desc` per checkpoint
+- renders each description into a CLEVR-like PNG
+- writes:
+  - `comparison.json`
+  - `comparison.md`
+  - one PNG per model
+
+### Command on Kuma
+
+Example:
+
+```bash
+python compare_one_sample_all_models.py \
+  --root-dir /work/com-304/datasets/clevr_com_304/ \
+  --split val \
+  --index 42 \
+  --device cuda \
+  --skip-image-reconstruction \
+  --baseline-checkpoint /home/belbachi/COM-304-FM/checkpoints/checkpoint-final_baseline.pth \
+  --v1-checkpoint /home/belbachi/COM-304-FM/checkpoints/checkpoint-final_V1.pth \
+  --v2-checkpoint /home/belbachi/COM-304-FM/checkpoints/checkpoint-final_V2.pth \
+  --v3-checkpoint /home/belbachi/COM-304-FM/checkpoints/checkpoint-final_V3.pth \
+  --v4-checkpoint /home/belbachi/COM-304-FM/checkpoints/checkpoint-final_V4.pth
+```
+
+### Why `--skip-image-reconstruction`
+
+On Kuma, the available CLEVR copy is usually tokenized only, so raw RGB images may not be available.
+In that case, the script:
+
+- renders the reference `scene_desc` into `scene_desc_render.png`
+- renders each predicted text into:
+  - `baseline.png`
+  - `v1.png`
+  - `v2.png`
+  - `v3.png`
+  - `v4.png`
+
+This still gives a clean visual comparison of the generated descriptions.
+
+### Output Folder
+
+For `--index 42`, the output is written to:
+
+```bash
+sample_comparisons/sample_42/
+```
+
+Typical files:
+
+- `comparison.json`
+- `comparison.md`
+- `scene_desc_render.png` or `rgb.png`
+- `baseline.png`
+- `v1.png`
+- `v2.png`
+- `v3.png`
+- `v4.png`
+
+### Read the Markdown Report
+
+```bash
+cat sample_comparisons/sample_42/comparison.md
+```
+
+This report contains:
+
+- the reference text
+- one predicted text per model
+- the rendered PNG for each prediction
+- a copyable `Text To Render As Image` block for each version
+
+### View the PNGs
+
+On Kuma, the easiest way is through JupyterLab:
+
+- open `sample_comparisons/sample_42/`
+- click the PNG files
+
+If you just want to list the generated PNGs:
+
+```bash
+ls -lh sample_comparisons/sample_42/*.png
+```
+
+### Interpretation of the Qualitative Comparison
+
+This qualitative comparison is not meant to replace the 200-sample averaged metrics.
+Instead, it helps answer questions such as:
+
+- Does the model preserve the overall scene structure?
+- Are the differences major semantic errors or only small coordinate shifts?
+- Which variants are exact on a given sample?
+
+In our case, this analysis showed that many differences between models are small spatial shifts, while shape, color, and material are often preserved.
 
 ## Optional Next Step: LLM Judge
 
