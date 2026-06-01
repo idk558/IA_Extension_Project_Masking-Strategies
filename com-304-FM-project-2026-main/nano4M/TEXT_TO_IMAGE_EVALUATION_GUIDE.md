@@ -2,7 +2,7 @@
 
 This document explains how to:
 
-1. Generate CLEVR images from `scene_desc` text using a trained `nano4M` checkpoint on Kuma
+1. Generate CLEVR images from `scene_desc` text using a trained `nano4M` checkpoint
 2. Score the generated images with the CLEVR verifier
 3. Interpret the main scores for comparing different trainings
 
@@ -45,15 +45,15 @@ Main scripts:
 - `scripts/eval_clevr_fidelity.py`
 - `nanofm/eval/clevr_verifier.py`
 
-Dataset path on Kuma:
+Dataset path:
 
 - `/work/com-304/datasets/clevr_com_304/`
 
-Cosmos tokenizer path on Kuma:
+Cosmos tokenizer path:
 
 - `/home/nalaoui/cosmos-tokenizer/Cosmos-0.1-Tokenizer-DI16x16`
 
-Recommended checkpoint folder on Kuma:
+Recommended checkpoint folder:
 
 - `/home/nalaoui/COM-304-FM/trained_models/`
 
@@ -61,46 +61,7 @@ Example baseline checkpoint:
 
 - `/home/nalaoui/COM-304-FM/trained_models/nano4M_baseline_random_masking/checkpoint-final.pth`
 
-## Step 1: Connect to Kuma
-
-```bash
-ssh -X nalaoui@kuma2.hpc.epfl.ch
-```
-
-Then start or attach to a GPU session. One GPU is enough for this evaluation.
-
-Activate the environment:
-
-```bash
-conda activate nanofm
-```
-
-Check that the GPU is visible:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no gpu')"
-```
-
-The first line should print:
-
-```text
-True
-```
-
-## Step 2: Go to the Project Folder
-
-```bash
-cd /home/nalaoui/COM-304-FM/com-304-FM-project-2026/nano4M
-```
-
-Check that the evaluation script exists:
-
-```bash
-ls scripts/eval_clevr_fidelity.py
-ls nanofm/eval/clevr_verifier.py
-```
-
-## Step 3: Check the Model Checkpoints
+## Step 1: Check the Model Checkpoints
 
 List all available trained model checkpoints:
 
@@ -118,7 +79,7 @@ Expected model folders:
 - `V3_text_span_image_block`
 - `V4_text-span-random_image-block-random`
 
-## Step 4: Run a Small Smoke Test
+## Step 2: Run a Small Smoke Test
 
 Before evaluating 200 samples, run 5 samples to make sure the checkpoint, GPU, dataset, tokenizer, Grounding DINO, and CLIP all work.
 
@@ -158,7 +119,7 @@ Each item contains:
 - `detected`
 - `per_category_breakdown`
 
-## Step 5: Run the Full 200-Sample Evaluation
+## Step 3: Run the Full 200-Sample Evaluation
 
 This is the text-to-image equivalent of the image-to-text guide's 200 validation examples.
 
@@ -199,7 +160,7 @@ The terminal prints a summary similar to:
 ]
 ```
 
-## Step 6: Evaluate the Other Trainings
+## Step 4: Evaluate the Other Trainings
 
 Use the same command for every model. Only change:
 
@@ -274,19 +235,15 @@ find /home/nalaoui/COM-304-FM/trained_models/<MODEL_FOLDER> -name "*.safetensors
 
 Then replace the checkpoint path in the command.
 
-## Step 7: Retrieve the Visual Reports
+## Step 5: Open the Visual Reports
 
-From the local Mac terminal:
-
-```bash
-scp -r nalaoui@kuma2.hpc.epfl.ch:/home/nalaoui/COM-304-FM/com-304-FM-project-2026/nano4M/outputs/eval_text_to_image ~/Desktop/
-```
-
-Open a visual report locally:
+Each run writes a visual report inside its output folder. For example:
 
 ```bash
-open ~/Desktop/eval_text_to_image/baseline_200/visual_report.html
+outputs/eval_text_to_image/baseline_200/visual_report.html
 ```
+
+Open this file in a browser to inspect the generated images and detections.
 
 The visual report shows:
 
