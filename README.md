@@ -41,5 +41,3 @@ Recommended order:
 2. If it works, run the full 200-sample evaluation for each model.
 3. Run the single-sample comparison from `README_SAMPLE_COMPARISON.md`.
 4. Report `mean_score`, `mean_clip_score`, the generated `visual_report.html`, and the sample `comparison.md`.
-
-Before running evaluations, check the dataset path, checkpoint paths, and Cosmos tokenizer path. Do not commit large evaluation outputs unless explicitly required.
